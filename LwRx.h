@@ -48,60 +48,122 @@
 #define rx_stat_low1_min 8
 #define rx_stat_count 9
 
+static const byte rx_nibble[] = {0xF6,0xEE,0xED,0xEB,0xDE,0xDD,0xDB,0xBE,0xBD,0xBB,0xB7,0x7E,0x7D,0x7B,0x77,0x6F};
+static const uint16_t lwrx_statsdflt[rx_stat_count] = {5000,0,5000,20000,0,2500,4000,0,500};
+
 //sets maximum number of pairings which can be held
 #define rx_maxpairs 10
 
-//Setup must be called once, set up pin used to receive data
-extern void lwrx_setup(int pin);
 
-//Set translate to determine whether translating from nibbles to bytes in message
-//Translate off only applies to 10char message returns
-extern void lwrx_settranslate(boolean translate);
+class LwRx {
 
-// Check to see whether message available
-extern boolean lwrx_message();
+public:
+    //Setup must be called once, set up pin used to receive data
+    void setup(int pin);
 
-//Get a message, len controls format (2 cmd+param, 4 cmd+param+room+device),10 full message
-extern boolean lwrx_getmessage(byte* buf, byte len);
+    //Set translate to determine whether translating from nibbles to bytes in message
+    //Translate off only applies to 10char message returns
+    void setTranslate(boolean translate);
 
-//Setup repeat filter
-extern void lwrx_setfilter(byte repeats, byte timeout);
+    // Check to see whether message available
+    boolean message(void);
 
-//Add pair, if no pairing set then all messages are received, returns number of pairs
-extern byte lwrx_addpair(byte* pairdata);
+    //Get a message, len controls format (2 cmd+param, 4 cmd+param+room+device),10 full message
+    boolean getMessage(byte* buf, byte len);
 
-// Get pair data into buffer  for the pairnumber. Returns current paircount
-// Use pairnumber 255 to just get current paircount
-extern byte lwrx_getpair(byte* pairdata, byte pairnumber);
+    //Setup repeat filter
+    void setFilter(byte repeats, byte timeout);
 
-//Make a pair from next message received within timeout 100mSec
-//This call returns immediately whilst message checking continues
-extern void lwrx_makepair(byte timeout);
+    //Add pair, if no pairing set then all messages are received, returns number of pairs
+    byte addPair(byte* pairdata);
 
-//Set pair mode controls
-extern void lwrx_setPairMode(boolean pairEnforce, boolean pairBaseOnly);
+    // Get pair data into buffer  for the pairnumber. Returns current paircount
+    // Use pairnumber 255 to just get current paircount
+    byte getPair(byte* pairdata, byte pairnumber);
 
-//Returns time from last packet received in msec
-// Can be used to determine if Rx may be still receiving repeats
-extern unsigned long lwrx_packetinterval();
+    //Make a pair from next message received within timeout 100mSec
+    //This call returns immediately whilst message checking continues
+    void makePair(byte timeout);
 
-extern void lwrx_clearpairing();
+    //Set pair mode controls
+    void setPairMode(boolean pairEnforce, boolean pairBaseOnly);
 
-//Return stats on pulse timings
-extern boolean lwrx_getstats(unsigned int* stats);
+    //Returns time from last packet received in msec
+    // Can be used to determine if Rx may be still receiving repeats
+    unsigned long packetInterval(void);
 
-//Enable collection of stats on pulse timings
-extern void lwrx_setstatsenable(boolean rx_stats_enable);
+    void clearPairing(void);
 
-//Set base address for EEPROM storage
-extern void lwrx_setEEPROMaddr(int addr);
+    //Return stats on pulse timings
+    boolean getStats(unsigned int* stats);
 
-//internal support functions
-boolean rx_reportMessage();
-int16_t rx_findNibble(byte data);	//int
-void rx_addpairfrommsg();
-void rx_paircommit();
-void rx_removePair(byte *buf);
-int16_t rx_checkPairs(byte *buf, boolean allDevices);	//int
-void restoreEEPROMPairing();
-int getIntNo(int pin);
+    //Enable collection of stats on pulse timings
+    void setStatsEnable(boolean rx_stats_enable);
+
+    //Set base address for EEPROM storage
+    void setEEPROMaddr(int addr);
+
+    //internal support functions
+private:
+    static const byte rx_cmd_off     = 0xF6; // raw 0
+    static const byte rx_cmd_on      = 0xEE; // raw 1
+    static const byte rx_cmd_mood    = 0xED; // raw 2
+    static const byte rx_par0_alloff = 0x7D; // param 192-255 all off (12 in msb)
+    static const byte rx_dev_15      = 0x6F; // device 15
+
+    int rx_pin = 2;
+    int EEPROMaddr = EEPROM_ADDR_DEFAULT;
+    static const byte rx_msglen = 10; // expected length of rx message
+
+    //Receive mode constants and variables
+    byte rx_msg[rx_msglen]; // raw message received
+    byte rx_buf[rx_msglen]; // message buffer during reception
+
+    unsigned long rx_prev; // time of previous interrupt in microseconds
+
+    volatile boolean rx_msgcomplete = false; //set high when message available
+    boolean rx_translate = true; // Set false to get raw data
+
+    byte rx_state = 0;
+    static const byte rx_state_idle = 0;
+    static const byte rx_state_msgstartfound = 1;
+    static const byte rx_state_bytestartfound = 2;
+    static const byte rx_state_getbyte = 3;
+
+    byte rx_num_bits = 0; // number of bits in the current byte
+    byte rx_num_bytes = 0; // number of bytes received 
+
+    //Pairing data
+    byte rx_paircount = 0;
+    byte rx_pairs[rx_maxpairs][8];
+    byte rx_pairtimeout = 0; // 100msec units
+    //set false to responds to all messages if no pairs set up
+    boolean rx_pairEnforce = false;
+    //set false to use Address, Room and Device in pairs, true just the Address part
+    boolean rx_pairBaseOnly = false;
+
+    // Repeat filters
+    byte rx_repeats = 2; //msg must be repeated at least this number of times
+    byte rx_repeatcount = 0;
+    byte rx_timeout = 20; //reset repeat window after this in 100mSecs
+    unsigned long rx_prevpkttime = 0; //last packet time in milliseconds
+    unsigned long rx_pairstarttime = 0; //last msg time in milliseconds
+
+    // Gather stats for pulse widths (ave is x 16)
+    uint16_t lwrx_stats[rx_stat_count];
+    boolean lwrx_stats_enable = true;
+
+public:
+    // this needs to be public, as it must be called from main sketch
+    void rx_process_bits(void);
+
+private:
+    boolean rx_reportMessage(void);
+    int16_t rx_findNibble(byte data);
+    void rx_addPairFromMsg(void);
+    void rx_pairCommit(void);
+    void rx_removePair(byte *buf);
+    int16_t rx_checkPairs(byte *buf, boolean allDevices);
+    void restoreEEPROMPairing(void);
+    int getIntNo(int pin);
+};
